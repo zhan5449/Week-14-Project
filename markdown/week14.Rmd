@@ -1,0 +1,78 @@
+---
+title: "R Notebook"
+output: pdf_document
+---
+
+# R Studio API Code
+
+```{r,include=F}
+knitr::opts_chunk$set(echo = TRUE)
+# library(rstudioapi)
+# setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+# Libraries & Access 
+```{r}
+library(RMariaDB)
+library(tidyverse)
+```
+
+# Data Import and Cleaning
+```{r}
+con <- dbConnect(MariaDB(),
+                 user="rnlander_8960r",
+                 password="rTCo.4vQ2vc-",
+                 host="tntlab.org")
+# dbGetQuery(con,"SHOW DATABASES") # discovered there are two databases
+# dbExecute(con,"USE information_schema") # take a look at the first database
+# dbGetQuery(con,"SHOW TABLES") # discovered a bunch of irrelevant tables--probably not the correct database
+dbExecute(con,"USE rnlander_8960") # take a look at the second database
+dbGetQuery(con,"SHOW TABLES") # yup looks like it
+
+# Import Data Separately and Combine using Tidyverse
+demos <- dbGetQuery(con,"SELECT * FROM demos")
+responses <- dbGetQuery(con,"SELECT * FROM responses")
+socialmedia <- dbGetQuery(con,"SELECT * FROM socialmedia")
+tidy_tbl <- demos %>%
+  left_join(responses,by=c("participant_num"="ident")) %>% # only include if exists in the demos table with a participant_num
+  left_join(socialmedia,by=c("smu_code"="code"))
+
+# Import and Combine Data using SQL
+sql_tbl <- dbGetQuery(con,"SELECT participant_num,age,sex,device,smu_code,rec_events,rec_products,rec_friends,rec_policial,facebook,twitter,instagram,youtube,snapchat,other
+                           FROM demos AS d
+                             LEFT JOIN responses AS r
+                               ON d.participant_num = r.ident
+                             LEFT JOIN socialmedia AS s
+                               ON r.smu_code=s.code;") # selected all columns except the two duplicating variables (responses.ident and socialmedia.code)
+
+# Clean tidy_tbl
+tidy_tbl <- tidy_tbl %>%
+  mutate_at(vars(matches("rec_")),function(x) case_when(x=="Not acceptable at all"~1,
+                                                        x=="Not very acceptable"~2,
+                                                        x=="Somewhat acceptable"~3,
+                                                        x=="Very acceptable"~4)) %>% # recode responses into numerical variables
+  mutate_at(vars(facebook:other),function(x) ifelse(x=="Not selected",0,1)) %>% # recode social media variables into numerical (1 for yes, 0 for no)
+  mutate(age=na_if(age,"NA")) %>% # recode odd cases of "NA" in age variable into actual missing value
+  mutate(privacy=rowMeans(select(.,rec_events:rec_policial),na.rm=T), # compute variables needed for analyses
+         sm_num=rowSums(select(.,facebook:other)))
+```
+
+# Analysis
+```{r}
+mod1 <- lm(privacy~sm_num,tidy_tbl)
+summary(mod1)
+mod2 <- lm(privacy~sm_num+age+sm_num*age,tidy_tbl) # age group 18-29 is reference
+summary(mod2)
+```
+
+Model 1 regresses acceptance of privacy intrusions on number of social media platforms used. There is a significantly positive relationship between the two.
+Model 2 examines the effect of age and finds that compared with the reference group of 18-29, none of the older age groups are significantly different in the relationship between their number of social media platform used and their acceptance of privacy intrusions.
+
+# Visualization
+```{r}
+ggplot(data=tidy_tbl[!is.na(tidy_tbl$age),],aes(x=sm_num,y=privacy,colour=age))+
+  geom_smooth(method="lm")+
+  labs(title="Relationship between Number of Social Media Platforms Used and Acceptance of Privacy Intrusion by Age Group",
+       x="Number of Social Media Platforms Used",
+       y="Acceptance of Privacy Intrusion")
+```
